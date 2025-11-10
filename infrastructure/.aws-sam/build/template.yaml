@@ -1,0 +1,118 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Infrastructure for the Lipid Prediction MLOps Pipeline. Deploys S3,
+  Lambda Functions, Step Function, and API Gateway.
+
+  '
+Globals:
+  Function:
+    Timeout: 60
+    Runtime: python3.13
+    MemorySize: 512
+Resources:
+  DataLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: lipid-pipeline-datalake-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  ModelsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: lipid-pipeline-models-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  LambdaETLRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: S3DataLakeETLAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource:
+              Fn::Sub: arn:aws:s3:::${DataLakeBucket}/*
+            Condition:
+              StringLike:
+                s3:prefix: raw/nhanes/*
+          - Effect: Allow
+            Action: s3:GetObject
+            Resource:
+              Fn::Sub: arn:aws:s3:::${DataLakeBucket}/raw/nhanes/*
+          - Effect: Allow
+            Action: s3:PutObject
+            Resource:
+              Fn::Sub: arn:aws:s3:::${DataLakeBucket}/processed/*
+  LambdaInferenceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  ETLLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ETLLambdaFunction
+      Handler: app.lambda_handler
+      Role:
+        Fn::GetAtt:
+        - LambdaETLRole
+        - Arn
+      Events: {}
+    Metadata:
+      SamResourceId: ETLLambdaFunction
+  InferenceLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: InferenceLambdaFunction
+      Handler: app.lambda_handler
+      Role:
+        Fn::GetAtt:
+        - LambdaInferenceRole
+        - Arn
+      Events:
+        PredictApi:
+          Type: Api
+          Properties:
+            Path: /predict
+            Method: post
+    Metadata:
+      SamResourceId: InferenceLambdaFunction
+Outputs:
+  DataLakeBucketName:
+    Description: S3 bucket for the data lake (raw, processed)
+    Value:
+      Ref: DataLakeBucket
+  ModelsBucketName:
+    Description: S3 bucket for ML model artifacts
+    Value:
+      Ref: ModelsBucket
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for inference
+    Value:
+      Fn::Sub: https://$ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/predict
